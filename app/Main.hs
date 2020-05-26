@@ -10,37 +10,99 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# OPTIONS_GHC -Wall -Werror #-}
+{-# LANGUAGE TypeOperators #-}
+--{-# OPTIONS_GHC -Wall -Werror #-}
 
 import Data.SBV
 import Data.SBV.Tools.BMCToy
-import Control.Lens
+import Data.SBV.Maybe
+--import Control.Lens
 import GHC.Generics
 import Data.Generics.Product
 
-data State = StA | StB
 
-mkSymbolicEnumeration ''State
-
-data Model  = Model  {  x ::  Integer,  y ::  State} deriving (Generic, Show)
-
-mkS ''Model
+data Event = Coin | Fill Integer deriving (Generic, Show)
 
 
-problem :: IO (Either String (Int, [Model]))
-problem = bmctoy (Just 5) True start trans goal
-    where
-    trans :: SModel -> SModel -> [SBool]
-    trans s s' = [ s' ^. field @"x" .== s ^. field @"x" + 2 .&& s' ^. field @"y" .==  toSym StB
-                 , s' .== (s &~ do { field @"y" .= toSym StA} )
-                 ]
+data Msg = Soldout
 
-    start :: SModel -> SBool
-    start smodel = smodel .== toSym (Model 1 StA)
 
-    goal :: SModel -> SBool
-    goal SModel{ x,  y} =  x .== 5 .&&  y .== toSym StA
+mkSymbolicEnumeration ''Msg
+
+
+data Model  = Model  {  coin ::  Integer,  juice :: Integer, msg ::  Maybe Msg} deriving (Generic, Show)
+
+maxCoin :: (Num a) => a
+maxCoin = 5
+
+maxJuice :: (Num a) => a
+maxJuice = 5
+
+-- generation code --------
+
+type PModel = (Integer, Integer, Maybe Msg)
+
+type SModel = SBV PModel
+
+type PEvent = () |+| Integer
+
+type SEvent = SBV PEvent
+
+instance PrimitiveIso Event PEvent where
+    toPrim   Coin           = Left ()
+    toPrim   (Fill n)       = Right n
+    fromPrim  (Left ())     = Coin
+    fromPrim  (Right n)     = Fill n
+
+instance PrimitiveIso Model PModel where
+    toPrim   (Model x y z) = (x, y, z)
+    fromPrim (x, y, z) = Model x y z
+
+
+_scoin = _s1
+_sjuice = _s2
+_smsg = _s3
+
+_sCoin = _sLeft
+_sFill = _sRight
+
+-----------------------------------
+
+trans :: SEvent -> SModel -> SModel -> [SBool]
+trans e s s' = [ e .== _sCoin .# literal ()
+                    .&& s .^. _smsg .== sNothing
+                    .&& s' .^. _scoin .== s .^. _scoin + 1
+                    .&& s' .^. _sjuice .== s .^. _sjuice - 1
+                    .&& msgInvariant s'
+               , e `sis` _sFill
+                    .&& e .^?! _sFill .> 0
+                    .&& s' .^. _scoin .== 0
+                    .&& s' .^. _sjuice .== s .^. _sjuice + e .^?! _sFill
+                    .&& s' .^. _sjuice .<= maxJuice
+                    .&& s' .^. _sjuice .>= 0
+                    .&& s' .^. _smsg .== sNothing
+               ]
+
+coinInvariant :: SModel -> SBool
+coinInvariant s = s .^. _scoin .< maxCoin
+
+msgInvariant :: SModel -> SBool
+msgInvariant s = ite (s .^. _sjuice .== 0) (s .^. _smsg .== literal (Just Soldout)) (s .^. _smsg .== sNothing)
+
+start :: SModel -> SBool
+start smodel = smodel .== toPrim' (Model 0 maxJuice Nothing)
+
+goal :: SModel -> SBool
+goal smodel =  sNot (coinInvariant smodel .&& msgInvariant smodel)
 
 
 main :: IO ()
-main = print =<< problem
+main = do
+        result <- bmctoy (Just 5) start trans goal
+        case result of
+            BTRReached evs sts  -> do
+                                      print [fromPrim @Event s| s <- evs]
+                                      print [fromPrim @Model s| s <- sts]
+            _ -> print result
+
+

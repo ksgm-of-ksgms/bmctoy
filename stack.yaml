@@ -34,11 +34,11 @@ packages:
 # Dependency packages to be pulled from upstream that are not in the resolver.
 # These entries can reference officially published versions as well as
 # forks / in-progress versions pinned to a git hash. For example:
-#
-# extra-deps:
+
+extra-deps:
 # - acme-missiles-0.3
-# - git: https://github.com/commercialhaskell/stack.git
-#   commit: e7b331f14bcffb8367cd58fbfc8b40ec7642100a
+- git: https://github.com/ksgm-of-ksgms/sbv
+  commit: 750e90495265769b5ab86bef9a62154cc6ec097c
 #
 # extra-deps: []
 
