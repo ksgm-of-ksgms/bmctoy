@@ -21,7 +21,7 @@ import GHC.Generics
 import Data.Generics.Product
 
 
-data Event = Coin | Fill Integer deriving (Generic, Show)
+data Event = Coin | Fill Integer | Lucky deriving (Generic, Show)
 
 
 data Msg = Soldout
@@ -44,15 +44,17 @@ type PModel = (Integer, Integer, Maybe Msg)
 
 type SModel = SBV PModel
 
-type PEvent = () |+| Integer
+type PEvent = () |+| Integer |+| ()
 
 type SEvent = SBV PEvent
 
 instance PrimitiveIso Event PEvent where
     toPrim   Coin           = Left ()
-    toPrim   (Fill n)       = Right n
+    toPrim   (Fill n)       = Right (Left n)
+    toPrim   Lucky          = Right (Right ())
     fromPrim  (Left ())     = Coin
-    fromPrim  (Right n)     = Fill n
+    fromPrim  (Right (Left n))     = Fill n
+    fromPrim  (Right (Right ()))   = Lucky
 
 instance PrimitiveIso Model PModel where
     toPrim   (Model x y z) = (x, y, z)
@@ -64,15 +66,17 @@ _sjuice = _s2
 _smsg = _s3
 
 _sCoin = _sLeft
-_sFill = _sRight
+_sFill = _sRight .-> _sLeft
+_sLucky = _sRight .-> _sRight
 
 -----------------------------------
 
 trans :: SEvent -> SModel -> SModel -> [SBool]
 trans e s s' = [ e .== _sCoin .# literal ()
-                    .&& s .^. _smsg .== sNothing
+                    .&& s' .^. _scoin .<= maxCoin
                     .&& s' .^. _scoin .== s .^. _scoin + 1
                     .&& s' .^. _sjuice .== s .^. _sjuice - 1
+                    .&& s' .^. _sjuice .>= 0
                     .&& msgInvariant s'
                , e `sis` _sFill
                     .&& e .^?! _sFill .> 0
@@ -81,10 +85,19 @@ trans e s s' = [ e .== _sCoin .# literal ()
                     .&& s' .^. _sjuice .<= maxJuice
                     .&& s' .^. _sjuice .>= 0
                     .&& s' .^. _smsg .== sNothing
+               , e .== _sLucky .# literal ()
+                    .&& s' .^. _scoin .<= maxCoin
+                    .&& s' .^. _scoin .== s .^. _scoin + 1
+                    .&& s' .^. _sjuice .== s .^. _sjuice - 2
+                    .&& s' .^. _sjuice .>= 0
+                    .&& msgInvariant s'
                ]
 
 coinInvariant :: SModel -> SBool
-coinInvariant s = s .^. _scoin .< maxCoin
+coinInvariant s =     s .^. _scoin .>= 0
+                  .&& s .^. _scoin .<= maxCoin
+                  .&& s .^. _sjuice .>= 0
+                  .&& s .^. _sjuice .<= maxJuice
 
 msgInvariant :: SModel -> SBool
 msgInvariant s = ite (s .^. _sjuice .== 0) (s .^. _smsg .== literal (Just Soldout)) (s .^. _smsg .== sNothing)
@@ -98,11 +111,11 @@ goal smodel =  sNot (coinInvariant smodel .&& msgInvariant smodel)
 
 main :: IO ()
 main = do
-        result <- bmctoy (Just 5) start trans goal
+        result <- bmctoy (Just 15) start trans goal
         case result of
             BTRReached evs sts  -> do
-                                      print [fromPrim @Event s| s <- evs]
-                                      print [fromPrim @Model s| s <- sts]
+                                      sequence_ $ print <$> [fromPrim @Event s| s <- evs]
+                                      sequence_ $ print <$> [fromPrim @Model s| s <- sts]
             _ -> print result
 
 
